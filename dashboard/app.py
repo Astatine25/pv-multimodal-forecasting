@@ -1,16 +1,36 @@
+# -------------------------
+# dashboard/app.py
+# -------------------------
+
+import sys
+from pathlib import Path
+import time
 import streamlit as st
 import pandas as pd
 import numpy as np
 import torch
-import time
-from pathlib import Path
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+# -------------------------
+# Add repo root to Python path
+# -------------------------
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+# -------------------------
+# Local module imports
+# -------------------------
 from inference.realtime_inference import RealtimePredictor
 
-# Optional imports for Kafka / MQTT
-from kafka import KafkaConsumer
-import json
-import paho.mqtt.client as mqtt
+# Optional: Kafka / MQTT
+try:
+    from kafka import KafkaConsumer
+    import json
+except ImportError:
+    KafkaConsumer = None
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    mqtt = None
 
 # -------------------------
 # Helper Functions
@@ -33,11 +53,17 @@ def compute_metrics(actual, predicted):
     mae = mean_absolute_error(actual, predicted)
     return rmse, mae
 
-# -------------------------
-# Streaming Input Examples
-# -------------------------
+def preprocess_input(raw_data, horizon=24):
+    # Replace with actual preprocessing pipeline
+    return torch.tensor(raw_data["features"]).reshape(1, horizon, 128)
 
+# -------------------------
+# Streaming Input
+# -------------------------
 def kafka_stream(topic="pv_data", bootstrap_servers="localhost:9092"):
+    if KafkaConsumer is None:
+        st.error("Kafka dependencies not installed!")
+        return
     consumer = KafkaConsumer(
         topic,
         bootstrap_servers=bootstrap_servers,
@@ -47,6 +73,9 @@ def kafka_stream(topic="pv_data", bootstrap_servers="localhost:9092"):
         yield message.value
 
 def mqtt_stream(broker="localhost", port=1883, topic="pv/data"):
+    if mqtt is None:
+        st.error("paho-mqtt not installed!")
+        return
     data_queue = []
 
     def on_message(client, userdata, msg):
@@ -65,13 +94,10 @@ def mqtt_stream(broker="localhost", port=1883, topic="pv/data"):
         else:
             time.sleep(0.5)
 
-def preprocess_input(raw_data, horizon=24):
-    # Replace with actual preprocessing pipeline
-    return torch.tensor(raw_data["features"]).reshape(1, horizon, 128)
-
 # -------------------------
 # Streamlit UI
 # -------------------------
+st.set_page_config(page_title="PV Multimodal Forecast Dashboard", layout="wide")
 st.title("PV Multimodal Forecast Dashboard (Real-time)")
 
 # Sidebar controls
@@ -93,10 +119,13 @@ chart_placeholder = st.empty()
 metrics_placeholder = st.empty()
 
 # -------------------------
-# Real-time Loop
+# Real-time Stream Handling
 # -------------------------
 if data_source == "Simulated":
-    stream = [dict(plant=plant, features=np.random.rand(horizon,128)) for plant in plants]
+    def simulated_stream():
+        while True:
+            yield { "features": np.random.rand(horizon, 128) }
+    stream = simulated_stream()
 elif data_source == "Kafka":
     stream = kafka_stream()
 elif data_source == "MQTT":
@@ -105,44 +134,45 @@ else:
     st.error("Invalid data source")
     st.stop()
 
-while True:
-    chart_data = pd.DataFrame()
-    metrics_text = ""
+# -------------------------
+# Main dashboard loop
+# -------------------------
+# Use Streamlit autorefresh
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=refresh_interval*1000, limit=None, key="forecast_refresh")
+
+chart_data = pd.DataFrame()
+metrics_text = ""
+
+for plant in plants:
+    try:
+        raw_data = next(stream)
+    except StopIteration:
+        raw_data = { "features": np.random.rand(horizon, 128) }
+
+    input_tensor = preprocess_input(raw_data, horizon)
+    forecast = model.predict(input_tensor).numpy().flatten()
     
-    for plant in plants:
-        # Get input
-        if data_source == "Simulated":
-            raw_data = dict(features=np.random.rand(horizon,128))
-        else:
-            raw_data = next(stream)  # expects dict with 'features' key
-        
-        input_tensor = preprocess_input(raw_data, horizon)
-        
-        # Predict
-        forecast = model.predict(input_tensor).numpy().flatten()
-        
-        # Simulate actual PV (replace with real sensor data)
-        actual = forecast + np.random.normal(0, 0.05, size=forecast.shape)
-        
-        # Confidence bands
-        lower, upper = generate_confidence_band(forecast)
-        
-        # Metrics
-        rmse, mae = compute_metrics(actual, forecast)
-        metrics_text += f"**{plant}** → RMSE: {rmse:.3f}, MAE: {mae:.3f}  \n"
-        
-        # Prepare DataFrame
-        df = pd.DataFrame({
-            f"{plant} Predicted": forecast,
-            f"{plant} Actual": actual,
-            f"{plant} Lower": lower,
-            f"{plant} Upper": upper
-        }, index=np.arange(1, horizon+1))
-        
-        chart_data = pd.concat([chart_data, df], axis=1) if not chart_data.empty else df
+    # Simulate actual PV for demo
+    actual = forecast + np.random.normal(0, 0.05, size=forecast.shape)
     
-    # Update chart & metrics
-    chart_placeholder.line_chart(chart_data)
-    metrics_placeholder.markdown(metrics_text)
+    # Confidence bands
+    lower, upper = generate_confidence_band(forecast)
     
-    time.sleep(refresh_interval)
+    # Metrics
+    rmse, mae = compute_metrics(actual, forecast)
+    metrics_text += f"**{plant}** → RMSE: {rmse:.3f}, MAE: {mae:.3f}  \n"
+    
+    # Prepare DataFrame
+    df = pd.DataFrame({
+        f"{plant} Predicted": forecast,
+        f"{plant} Actual": actual,
+        f"{plant} Lower": lower,
+        f"{plant} Upper": upper
+    }, index=np.arange(1, horizon+1))
+    
+    chart_data = pd.concat([chart_data, df], axis=1) if not chart_data.empty else df
+
+# Display chart and metrics
+chart_placeholder.line_chart(chart_data)
+metrics_placeholder.markdown(metrics_text)
