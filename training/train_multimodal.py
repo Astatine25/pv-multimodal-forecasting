@@ -1,39 +1,94 @@
+# training/train_multimodal.py
+
 import torch
-from torch.utils.data import DataLoader, TensorDataset
-from models.transformer import MultimodalTransformer
+import torch.nn as nn
+import torch.optim as optim
+from pathlib import Path
+import numpy as np
 
-def main():
-    # Dummy data (replace with real tensors later)
-    B, T = 32, 12
-    weather_dim = 6
-    img_dim = 128
+# -------------------------
+# Config
+# -------------------------
+EPOCHS = 10
+LR = 1e-3
+HORIZON = 24
+FEATURE_DIM = 128
+CHECKPOINT_DIR = Path("models/checkpoints")
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-    weather = torch.randn(B, T, weather_dim)
-    images = torch.randn(B, T, img_dim)
-    y = torch.randn(B, 1)
+# -------------------------
+# Dummy Multimodal Model
+# Replace later with real transformer
+# -------------------------
+class MultimodalForecastModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(HORIZON * FEATURE_DIM, 256),
+            nn.ReLU(),
+            nn.Linear(256, HORIZON)
+        )
 
-    dataset = TensorDataset(weather, images, y)
-    loader = DataLoader(dataset, batch_size=8)
+    def forward(self, x):
+        return self.net(x)
 
-    model = MultimodalTransformer(
-        weather_dim=weather_dim,
-        img_embed_dim=img_dim
-    )
+# -------------------------
+# Dummy Dataset (replace later)
+# -------------------------
+def get_batch(batch_size=16):
+    x = torch.rand(batch_size, HORIZON, FEATURE_DIM)
+    y = torch.rand(batch_size, HORIZON)
+    return x, y
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    loss_fn = torch.nn.MSELoss()
+# -------------------------
+# Training
+# -------------------------
+def train():
+    model = MultimodalForecastModel()
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+    criterion = nn.MSELoss()
 
-    for epoch in range(5):
-        total_loss = 0
-        for w, i, target in loader:
-            optimizer.zero_grad()
-            pred = model(w, i)
-            loss = loss_fn(pred, target)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+    best_loss = float("inf")
 
-        print(f"Epoch {epoch}: Loss = {total_loss/len(loader):.4f}")
+    for epoch in range(EPOCHS):
+        model.train()
+        x, y = get_batch()
+        preds = model(x)
+        loss = criterion(preds, y)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        print(f"Epoch {epoch}: Loss = {loss.item():.4f}")
+
+        # -------------------------
+        # Save checkpoint
+        # -------------------------
+        ckpt_path = CHECKPOINT_DIR / f"epoch_{epoch}.pt"
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "loss": loss.item(),
+            },
+            ckpt_path,
+        )
+
+        # Save best model
+        if loss.item() < best_loss:
+            best_loss = loss.item()
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "loss": loss.item(),
+                },
+                CHECKPOINT_DIR / "best_model.pt",
+            )
+
+    print("✅ Training complete. Checkpoints saved.")
 
 if __name__ == "__main__":
-    main()
+    train()
