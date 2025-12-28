@@ -1,9 +1,26 @@
 import torch
+from models.multimodal_forecast import MultimodalForecastModel
 
-def run_inference(model, cnn, ts_data, img_data):
-    model.eval()
-    cnn.eval()
-    with torch.no_grad():
-        img_emb = cnn(img_data)
-        forecast = model(ts_data, img_emb)
-    return forecast
+
+class RealtimePredictor:
+    def __init__(self, checkpoint_path, device=None):
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        # 1️⃣ Rebuild EXACT same model
+        self.model = MultimodalForecastModel().to(self.device)
+
+        # 2️⃣ Load checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+        if "model_state_dict" in checkpoint:
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+        else:
+            self.model.load_state_dict(checkpoint)
+
+        # 3️⃣ Eval mode
+        self.model.eval()
+
+    @torch.no_grad()
+    def predict(self, x):
+        x = x.to(self.device)
+        return self.model(x)
