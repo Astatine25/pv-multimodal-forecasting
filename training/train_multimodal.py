@@ -1,15 +1,20 @@
-def train_multimodal(model, cnn, loader, optimizer, loss_fn):
-    model.train()
-    cnn.train()
-    total_loss = 0
+import torch
+from torch.utils.data import DataLoader
+from models.transformer import MultimodalTransformer
 
-    for ts, img, y in loader:
-        optimizer.zero_grad()
-        img_emb = cnn(img)
-        preds = model(ts, img_emb).squeeze()
-        loss = loss_fn(preds, y)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
+def train(model, loader, epochs=10):
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    loss_fn = torch.nn.MSELoss()
 
-    return total_loss / len(loader)
+    for epoch in range(epochs):
+        total_loss = 0
+        for x, y in loader:
+            optimizer.zero_grad()
+            pred = model(x)
+            loss = loss_fn(pred, y)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+
+        print(f"Epoch {epoch}: Loss = {total_loss/len(loader):.4f}")
+
