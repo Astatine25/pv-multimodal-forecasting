@@ -9,3 +9,5 @@ timm
 torch-geometric
 streamlit
 plotly
+kafka-python
+paho-mqtt
