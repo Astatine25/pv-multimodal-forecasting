@@ -1,36 +1,39 @@
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 from models.transformer import MultimodalTransformer
 
-def train_multimodal(model, loader, epochs=10):
+def main():
+    # Dummy data (replace with real tensors later)
+    B, T = 32, 12
+    weather_dim = 6
+    img_dim = 128
+
+    weather = torch.randn(B, T, weather_dim)
+    images = torch.randn(B, T, img_dim)
+    y = torch.randn(B, 1)
+
+    dataset = TensorDataset(weather, images, y)
+    loader = DataLoader(dataset, batch_size=8)
+
+    model = MultimodalTransformer(
+        weather_dim=weather_dim,
+        img_embed_dim=img_dim
+    )
+
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss_fn = torch.nn.MSELoss()
 
-    for epoch in range(epochs):
+    for epoch in range(5):
         total_loss = 0
-        for x, y in loader:
+        for w, i, target in loader:
             optimizer.zero_grad()
-            pred = model(x)
-            loss = loss_fn(pred, y)
+            pred = model(w, i)
+            loss = loss_fn(pred, target)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
 
-        print(f"Epoch {epoch+1}: Loss = {total_loss/len(loader):.4f}")
-
-def main():
-    # dummy example — replace with real dataset
-    model = MultimodalTransformer(
-        num_features=10,
-        image_dim=128,
-        hidden_dim=256
-    )
-
-    dummy_x = torch.randn(64, 10)
-    dummy_y = torch.randn(64, 1)
-    loader = DataLoader(list(zip(dummy_x, dummy_y)), batch_size=8)
-
-    train_multimodal(model, loader)
+        print(f"Epoch {epoch}: Loss = {total_loss/len(loader):.4f}")
 
 if __name__ == "__main__":
     main()
