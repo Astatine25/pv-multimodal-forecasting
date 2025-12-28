@@ -1,18 +1,31 @@
-# Base image
+# -----------------------------
+# Optimized Dockerfile
+# -----------------------------
+
+# 1️⃣ Base image
 FROM python:3.11-slim
 
-# Set working directory
+# 2️⃣ Set working directory
 WORKDIR /app
 
-# Copy repo
-COPY . /app
+# 3️⃣ Install system dependencies (if needed)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
-RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+# 4️⃣ Copy only requirements first (leverage caching)
+COPY requirements.txt .
 
-# Expose dashboard port
+# 5️⃣ Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# 6️⃣ Copy rest of repo
+COPY . .
+
+# 7️⃣ Expose Streamlit port
 EXPOSE 8501
 
-# Default command to run Streamlit dashboard
-CMD ["python", "streamlit", "run", "dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# 8️⃣ Correct CMD to run Streamlit
+CMD ["streamlit", "run", "dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
