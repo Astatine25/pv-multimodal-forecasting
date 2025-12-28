@@ -1,0 +1,15 @@
+replicaCount: 2
+
+image:
+  repository: your_dockerhub_username/pv-forecasting
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: LoadBalancer
+  port: 80
+
+resources:
+  limits:
+    cpu: 1
+    memory: 2Gi
