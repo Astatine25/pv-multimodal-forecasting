@@ -1,4 +1,6 @@
+# -------------------------
 # training/train_multimodal.py
+# -------------------------
 
 import torch
 import torch.nn as nn
@@ -7,45 +9,44 @@ from pathlib import Path
 import numpy as np
 
 # -------------------------
+# Add repo root to PYTHONPATH
+# -------------------------
+import sys
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+# -------------------------
+# Import shared model
+# -------------------------
+from models.multimodal_forecast import MultimodalForecastModel
+
+# -------------------------
 # Config
 # -------------------------
 EPOCHS = 10
 LR = 1e-3
+BATCH_SIZE = 16
 HORIZON = 24
 FEATURE_DIM = 128
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 CHECKPOINT_DIR = Path("models/checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
 # -------------------------
-# Dummy Multimodal Model
-# Replace later with real transformer
-# -------------------------
-class MultimodalForecastModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(HORIZON * FEATURE_DIM, 256),
-            nn.ReLU(),
-            nn.Linear(256, HORIZON)
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-# -------------------------
 # Dummy Dataset (replace later)
 # -------------------------
-def get_batch(batch_size=16):
+def get_batch(batch_size=BATCH_SIZE):
     x = torch.rand(batch_size, HORIZON, FEATURE_DIM)
     y = torch.rand(batch_size, HORIZON)
     return x, y
 
 # -------------------------
-# Training
+# Training Loop
 # -------------------------
 def train():
-    model = MultimodalForecastModel()
+    print(f"Training on device: {DEVICE}")
+
+    model = MultimodalForecastModel().to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LR)
     criterion = nn.MSELoss()
 
@@ -53,7 +54,10 @@ def train():
 
     for epoch in range(EPOCHS):
         model.train()
+
         x, y = get_batch()
+        x, y = x.to(DEVICE), y.to(DEVICE)
+
         preds = model(x)
         loss = criterion(preds, y)
 
@@ -61,34 +65,29 @@ def train():
         loss.backward()
         optimizer.step()
 
-        print(f"Epoch {epoch}: Loss = {loss.item():.4f}")
+        print(f"Epoch {epoch:02d} | Loss: {loss.item():.6f}")
 
         # -------------------------
         # Save checkpoint
         # -------------------------
-        ckpt_path = CHECKPOINT_DIR / f"epoch_{epoch}.pt"
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "loss": loss.item(),
-            },
-            ckpt_path,
-        )
+        ckpt = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "loss": loss.item(),
+        }
+
+        torch.save(ckpt, CHECKPOINT_DIR / f"epoch_{epoch}.pt")
 
         # Save best model
         if loss.item() < best_loss:
             best_loss = loss.item()
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "loss": loss.item(),
-                },
-                CHECKPOINT_DIR / "best_model.pt",
-            )
+            torch.save(ckpt, CHECKPOINT_DIR / "best_model.pt")
 
-    print("✅ Training complete. Checkpoints saved.")
+    print("Training complete. Checkpoints saved.")
 
+# -------------------------
+# Entry Point
+# -------------------------
 if __name__ == "__main__":
     train()
