@@ -1,3 +1,3 @@
-def pv_physical_model(irradiance, temperature):
-    temp_coeff = -0.004
-    return irradiance * (1 + temp_coeff * (temperature - 25))
+def pv_power(irradiance, temperature, efficiency=0.18):
+    temp_coeff = 1 - 0.004 * (temperature - 25)
+    return irradiance * efficiency * temp_coeff
