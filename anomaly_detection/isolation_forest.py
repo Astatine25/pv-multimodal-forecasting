@@ -1,5 +1,11 @@
 from sklearn.ensemble import IsolationForest
 
-def detect_faults(data):
-    model = IsolationForest(contamination=0.05)
-    return model.fit_predict(data)
+class AnomalyDetector:
+    def __init__(self):
+        self.model = IsolationForest(contamination=0.01)
+
+    def fit(self, X):
+        self.model.fit(X)
+
+    def detect(self, X):
+        return self.model.predict(X)
