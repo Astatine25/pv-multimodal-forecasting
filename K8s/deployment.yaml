@@ -1,23 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: pv-forecasting-deployment
+  name: pv-forecast
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: pv-forecasting
+      app: pv
   template:
     metadata:
       labels:
-        app: pv-forecasting
+        app: pv
     spec:
       containers:
-        - name: pv-forecasting
-          image: your_dockerhub_username/pv-forecasting:latest
-          ports:
-            - containerPort: 8501
-          resources:
-            limits:
-              memory: "2Gi"
-              cpu: "1"
+      - name: pv
+        image: yourdocker/pv-forecast:latest
+        ports:
+        - containerPort: 8501
