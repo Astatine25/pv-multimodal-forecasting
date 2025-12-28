@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: your_dockerhub_username/pv-forecasting
+  repository: astatine25/pv-multimodal-forecasting
   tag: latest
   pullPolicy: IfNotPresent
 
