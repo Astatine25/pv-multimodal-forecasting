@@ -1,116 +1,91 @@
 # dashboard/app.py
-
-import sys
-from pathlib import Path
-import time
-import json
+import streamlit as st
 import numpy as np
 import pandas as pd
-import streamlit as st
+import tensorflow as tf
+from pathlib import Path
+from utils.data_utils import load_and_encode_images, load_weather_data
+from models.multimodal_transformer import build_model
+import paho.mqtt.client as mqtt
+from kafka import KafkaConsumer
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+st.set_page_config(page_title="PV Power Forecasting", layout="wide")
 
-from inference.realtime_inference import RealtimePredictor
-
-# Optional streaming
-try:
-    from kafka import KafkaConsumer
-except:
-    KafkaConsumer = None
-
-try:
-    import paho.mqtt.client as mqtt
-except:
-    mqtt = None
-
-# ---------------------------
-# CONFIG
-# ---------------------------
-HISTORY_STEPS = 12
-IMG_EMB_DIM = 64
-WEATHER_DIM = 3
-
-# ---------------------------
-# UI
-# ---------------------------
-st.set_page_config(layout="wide")
-st.title("Multimodal PV Forecast – Real Time")
-
-source = st.sidebar.selectbox(
-    "Data Source",
-    ["Simulated", "Kafka", "MQTT"]
-)
-
-refresh = st.sidebar.slider("Refresh (seconds)", 1, 10, 5)
-
-# ---------------------------
+# -----------------------------
 # Load model
-# ---------------------------
-model = RealtimePredictor()
+# -----------------------------
+model = build_model()
+model.load_weights("models/checkpoints/multimodal_model")  # load trained weights
 
-# ---------------------------
-# Fake real-time generator
-# ---------------------------
-def simulated_stream():
-    while True:
-        yield {
-            "power_seq": np.random.rand(HISTORY_STEPS),
-            "weather": np.random.rand(WEATHER_DIM),
-            "image_emb": np.random.rand(IMG_EMB_DIM)
-        }
+# -----------------------------
+# Load Weather Data
+# -----------------------------
+WEATHER_COLS = ["AMBIENT_TEMPERATURE", "MODULE_TEMPERATURE", "IRRADIATION"]
+weather_df = load_weather_data("data/Plant_2_Weather_Sensor_Data.csv", WEATHER_COLS)
 
-# ---------------------------
-# Kafka
-# ---------------------------
-def kafka_stream(topic="pv_stream", servers="localhost:9092"):
-    consumer = KafkaConsumer(
-        topic,
-        bootstrap_servers=servers,
-        value_deserializer=lambda x: json.loads(x.decode())
-    )
-    for msg in consumer:
-        yield msg.value
+# -----------------------------
+# Load Images (ViT embeddings)
+# -----------------------------
+image_encoder = None
+try:
+    from timm import create_model
+    import torch
+    class ViTEncoder:
+        def __init__(self):
+            self.model = create_model('vit_base_patch16_224', pretrained=True)
+            self.model.eval()
 
-# ---------------------------
-# Stream select
-# ---------------------------
-if source == "Simulated":
-    stream = simulated_stream()
-elif source == "Kafka" and KafkaConsumer:
-    stream = kafka_stream()
-else:
-    st.error("Streaming backend not available")
-    st.stop()
+        def __call__(self, img_tensor):
+            with torch.no_grad():
+                return self.model.forward(img_tensor).numpy()
 
-# ---------------------------
-# Autorefresh
-# ---------------------------
-from streamlit_autorefresh import st_autorefresh
-st_autorefresh(interval=refresh * 1000, key="refresh")
+    image_encoder = ViTEncoder()
+except:
+    st.warning("timm / ViT not installed. Using placeholder embeddings.")
 
-# ---------------------------
-# Inference
-# ---------------------------
-data = next(stream)
+# -----------------------------
+# MQTT / Kafka Streams (Optional)
+# -----------------------------
+KAFKA_TOPIC = "pv_forecast"
+MQTT_BROKER = "localhost"
 
-seq = np.concatenate(
-    [data["power_seq"][:, None],
-     np.repeat(data["weather"][None, :], HISTORY_STEPS, axis=0)],
-    axis=1
-)[None, :, :]
+def on_message(client, userdata, msg):
+    st.write(f"MQTT message received: {msg.payload}")
 
-img = data["image_emb"][None, :]
+client = mqtt.Client()
+client.on_message = on_message
+# client.connect(MQTT_BROKER)
+# client.loop_start()
+# client.subscribe("pv/forecast")
 
-forecast = model.predict(seq, img).flatten()
+# -----------------------------
+# User Interface
+# -----------------------------
+st.title("Multimodal PV Power Forecasting")
 
-# uncertainty bands (temporary)
-lower = forecast * 0.95
-upper = forecast * 1.05
+uploaded_image = st.file_uploader("Upload sky image", type=["jpg", "png"])
+weather_input = st.text_input("Enter weather CSV path (optional)", "data/Plant_2_Weather_Sensor_Data.csv")
 
-df = pd.DataFrame({
-    "Forecast": forecast,
-    "Lower": lower,
-    "Upper": upper
-})
+if uploaded_image is not None:
+    img_arr = tf.keras.preprocessing.image.img_to_array(
+        tf.keras.preprocessing.image.load_img(uploaded_image, target_size=(224,224))
+    ) / 255.0
 
-st.line_chart(df)
+    if image_encoder:
+        img_tensor = np.expand_dims(img_arr, 0)
+        img_emb = image_encoder(img_tensor)  # shape (1, IMG_EMB_DIM)
+    else:
+        img_emb = np.random.rand(1, 64)  # fallback
+
+    # Dummy historical power + weather
+    X_seq = np.random.rand(1, 12, 1 + len(WEATHER_COLS))
+
+    # Predict
+    pred = model.predict([X_seq, img_emb])[0]  # shape (3, FUTURE_STEPS)
+    lower, median, upper = pred[0], pred[1], pred[2]
+
+    st.line_chart(pd.DataFrame({
+        "Lower": lower,
+        "Median": median,
+        "Upper": upper
+    }))
