@@ -1,5 +1,5 @@
 from utils.data_utils import load_pv_data, load_weather_data, load_and_encode_images
-from models/transformer.py import build_model
+from models.multimodal_transformer import build_model
 from tensorflow.keras.callbacks import EarlyStopping
 import numpy as np
 
