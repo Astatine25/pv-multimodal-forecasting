@@ -23,7 +23,7 @@ def build_image_encoder():
     return models.Model(inp, out)
 
 image_encoder = build_image_encoder()
-img_emb_df = load_and_encode_images("https://github.com/Astatine25/pv-multimodal-forecasting/releases/tag/images", image_encoder)
+img_emb_df = load_and_encode_images("data/images",", image_encoder)
 
 # Merge modalities
 full_df = pd.merge_asof(pv_df.sort_index(), img_emb_df.sort_index(), direction="backward")
