@@ -4,18 +4,17 @@
 
 import sys
 from pathlib import Path
-import time
 import streamlit as st
-import pandas as pd
 import numpy as np
+import pandas as pd
 import torch
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # -------------------------
-# Add repo root to Python path
+# Fix Python path (repo root)
 # -------------------------
-ROOT_DIR = Path(__file__).resolve().parent.parent
-sys.path.append(str(ROOT_DIR))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
 
 # -------------------------
 # Local imports
@@ -23,63 +22,23 @@ sys.path.append(str(ROOT_DIR))
 from inference.realtime_inference import RealtimePredictor
 
 # -------------------------
-# Helper Functions
-# -------------------------
-def load_model(checkpoint_dir="models/checkpoints"):
-    checkpoint_dir = Path(checkpoint_dir)
-    checkpoints = list(checkpoint_dir.glob("*.pt"))
-
-    if not checkpoints:
-        st.error("❌ No model checkpoints found. Train the model first.")
-        return None
-
-    latest_ckpt = max(checkpoints, key=lambda x: x.stat().st_mtime)
-    st.sidebar.success(f"Loaded model: {latest_ckpt.name}")
-    return RealtimePredictor(latest_ckpt)
-
-
-def preprocess_input(raw_data, horizon):
-    """
-    Converts input features to float32 tensor
-    Shape: (1, horizon, 128)
-    """
-    return torch.tensor(
-        raw_data["features"],
-        dtype=torch.float32
-    ).reshape(1, horizon, 128)
-
-
-def generate_confidence_band(preds, scale=0.05):
-    lower = preds * (1 - scale)
-    upper = preds * (1 + scale)
-    return lower, upper
-
-
-def compute_metrics(actual, predicted):
-    rmse = np.sqrt(mean_squared_error(actual, predicted))
-    mae = mean_absolute_error(actual, predicted)
-    return rmse, mae
-
-
-# -------------------------
-# Streamlit UI
+# Streamlit config
 # -------------------------
 st.set_page_config(
     page_title="PV Multimodal Forecast Dashboard",
-    layout="wide"
+    layout="wide",
 )
 
-st.title("🔆 PV Multimodal Forecast Dashboard")
+st.title("☀️ PV Multimodal Forecast Dashboard")
 
 # -------------------------
-# Sidebar Controls
+# Sidebar controls
 # -------------------------
-st.sidebar.header("Forecast Controls")
+st.sidebar.header("Forecast Settings")
 
-plants = st.sidebar.multiselect(
-    "Select PV Plant(s)",
-    ["Plant 1", "Plant 2", "Plant 3"],
-    default=["Plant 1"]
+plant = st.sidebar.selectbox(
+    "Select Plant",
+    ["Plant 1", "Plant 2", "Plant 3"]
 )
 
 horizon = st.sidebar.slider(
@@ -89,89 +48,86 @@ horizon = st.sidebar.slider(
     value=24
 )
 
-refresh_interval = st.sidebar.slider(
-    "Refresh Interval (seconds)",
-    min_value=1,
-    max_value=10,
-    value=5
-)
-
-data_source = st.sidebar.selectbox(
-    "Data Source",
-    ["Simulated"]
-)
-
 # -------------------------
-# Load Model
+# Load model
 # -------------------------
+@st.cache_resource
+def load_model():
+    ckpt_path = ROOT / "models" / "checkpoints" / "best_model.pt"
+    if not ckpt_path.exists():
+        st.error("❌ No trained model found. Train the model first.")
+        st.stop()
+    return RealtimePredictor(ckpt_path)
+
 model = load_model()
-if model is None:
-    st.stop()
 
 # -------------------------
-# Auto Refresh
+# Generate simulated inputs
+# (replace later with real weather + images)
 # -------------------------
-from streamlit_autorefresh import st_autorefresh
-st_autorefresh(
-    interval=refresh_interval * 1000,
-    key="pv_refresh"
-)
-
-# -------------------------
-# Data Generation (Simulated)
-# -------------------------
-def get_simulated_data():
-    return {
-        "features": np.random.rand(horizon, 128)
-    }
+def generate_inputs():
+    weather_feats = torch.rand(1, 128, dtype=torch.float32)
+    image_feats = torch.rand(1, 128, dtype=torch.float32)
+    return weather_feats, image_feats
 
 # -------------------------
-# Run Forecast
+# Prediction
 # -------------------------
-chart_data = pd.DataFrame()
-metrics_text = ""
+weather_feats, image_feats = generate_inputs()
 
-for plant in plants:
-    raw_data = get_simulated_data()
+with torch.no_grad():
+    preds = model.predict(weather_feats, image_feats).numpy()
 
-    input_tensor = preprocess_input(raw_data, horizon)
+# preds shape: (horizon, 3)
+p10 = preds[:horizon, 0]
+p50 = preds[:horizon, 1]
+p90 = preds[:horizon, 2]
 
-    forecast = model.predict(input_tensor).cpu().numpy().flatten()
-
-    # Simulated actual PV (demo)
-    actual = forecast + np.random.normal(0, 0.05, size=forecast.shape)
-
-    lower, upper = generate_confidence_band(forecast)
-
-    rmse, mae = compute_metrics(actual, forecast)
-
-    metrics_text += (
-        f"**{plant}** → RMSE: `{rmse:.3f}` | MAE: `{mae:.3f}`  \n"
-    )
-
-    df = pd.DataFrame(
-        {
-            f"{plant} Predicted": forecast,
-            f"{plant} Actual": actual,
-            f"{plant} Lower": lower,
-            f"{plant} Upper": upper,
-        },
-        index=np.arange(1, horizon + 1)
-    )
-
-    chart_data = pd.concat([chart_data, df], axis=1)
+# Simulated actual PV (for demo only)
+actual = p50 + np.random.normal(0, 0.03, size=horizon)
 
 # -------------------------
-# Display
+# Metrics
+# -------------------------
+rmse = np.sqrt(mean_squared_error(actual, p50))
+mae = mean_absolute_error(actual, p50)
+
+# -------------------------
+# Plot data
+# -------------------------
+df = pd.DataFrame({
+    "Hour": np.arange(1, horizon + 1),
+    "Actual": actual,
+    "P10": p10,
+    "P50 (Forecast)": p50,
+    "P90": p90,
+})
+
+df.set_index("Hour", inplace=True)
+
+# -------------------------
+# Display chart
 # -------------------------
 st.subheader("📈 Forecast vs Actual")
-st.line_chart(chart_data)
 
+st.line_chart(df)
+
+# -------------------------
+# Metrics display
+# -------------------------
 st.subheader("📊 Metrics")
-st.markdown(metrics_text)
 
-st.caption(
-    "Model: Multimodal PV Forecast | "
-    "Inference: Real-time | "
-    "Deployment-ready"
+col1, col2 = st.columns(2)
+col1.metric("RMSE", f"{rmse:.3f}")
+col2.metric("MAE", f"{mae:.3f}")
+
+# -------------------------
+# Footer
+# -------------------------
+st.markdown(
+    """
+    **Model**: Multimodal PV Forecast (Weather + Images)  
+    **Uncertainty**: Quantile Regression (P10 / P50 / P90)  
+    **Inference**: Real-time, deployment-ready
+    """
 )
