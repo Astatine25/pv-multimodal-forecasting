@@ -1,41 +1,33 @@
+# models/multimodal_transformer.py
+
 import torch
 import torch.nn as nn
 
+HISTORY_STEPS = 24
+FEATURE_DIM = 4  # Power + weather features
+IMG_EMB_DIM = 64
+FUTURE_STEPS = 6
+
 class MultimodalTransformer(nn.Module):
-    def __init__(
-        self,
-        weather_dim,
-        img_embed_dim=128,
-        d_model=128,
-        nhead=4,
-        num_layers=2
-    ):
+    def __init__(self):
         super().__init__()
+        # Sequence encoder
+        self.seq_fc = nn.Linear(HISTORY_STEPS*FEATURE_DIM, 128)
+        # Image encoder
+        self.img_fc = nn.Linear(IMG_EMB_DIM, 64)
+        # Fusion
+        self.fusion_fc = nn.Linear(128 + 64, 64)
+        self.out_fc = nn.Linear(64, FUTURE_STEPS)
 
-        self.weather_fc = nn.Linear(weather_dim, d_model)
-        self.img_fc = nn.Linear(img_embed_dim, d_model)
+    def forward(self, seq_x, img_x):
+        # Flatten sequence
+        seq_x = seq_x.view(seq_x.size(0), -1)
+        seq_feat = torch.relu(self.seq_fc(seq_x))
+        img_feat = torch.relu(self.img_fc(img_x))
+        fused = torch.cat([seq_feat, img_feat], dim=1)
+        fused = torch.relu(self.fusion_fc(fused))
+        out = self.out_fc(fused)
+        return out
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=num_layers
-        )
-
-        self.regressor = nn.Linear(d_model, 1)
-
-    def forward(self, weather, image_embed):
-        """
-        weather: [B, T, weather_dim]
-        image_embed: [B, T, img_embed_dim]
-        """
-        w = self.weather_fc(weather)
-        i = self.img_fc(image_embed)
-
-        x = w + i
-        x = self.transformer(x)
-
-        return self.regressor(x[:, -1])
+def build_model():
+    return MultimodalTransformer()
