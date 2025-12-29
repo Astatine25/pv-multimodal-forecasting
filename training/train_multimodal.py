@@ -1,7 +1,9 @@
+import pandas as pd
 from utils.data_utils import load_pv_data, load_weather_data, load_and_encode_images
 from models.multimodal_transformer import build_model
 from tensorflow.keras.callbacks import EarlyStopping
 import numpy as np
+import tensorflow as tf
 
 HISTORY_STEPS = 12
 FUTURE_STEPS = 6
