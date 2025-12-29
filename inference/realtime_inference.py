@@ -1,15 +1,9 @@
-import torch
-from models.multimodal_forecast import MultimodalForecastModel
+import tensorflow as tf
+import numpy as np
 
 class RealtimePredictor:
-    def __init__(self, ckpt_path):
-        ckpt = torch.load(ckpt_path, map_location="cpu")
-        self.model = MultimodalForecastModel()
-        self.model.load_state_dict(ckpt["model_state"])
-        self.model.eval()
-        self.quantiles = ckpt["quantiles"]
+    def __init__(self, model_path):
+        self.model = tf.keras.models.load_model(model_path)
 
-    @torch.no_grad()
-    def predict(self, weather_feats, image_feats):
-        preds = self.model(weather_feats, image_feats)
-        return preds.squeeze(0)
+    def predict(self, X_seq, X_img):
+        return self.model.predict([X_seq, X_img])
