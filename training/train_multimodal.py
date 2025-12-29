@@ -33,7 +33,7 @@ df = pd.read_csv(DATA_PATH, parse_dates=["timestamp"])
 df = df.sort_values("timestamp").reset_index(drop=True)
 
 # Identify columns
-power_col = "POWER_AC"
+power_col = "power"
 weather_cols = ["AMBIENT_TEMPERATURE", "MODULE_TEMPERATURE", "IRRADIATION"]
 img_cols = [c for c in df.columns if c.startswith("vit_")]
 
