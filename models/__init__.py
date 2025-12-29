@@ -1,24 +1,43 @@
-from .cnn_encoder import CNNEncoder
-from .multimodal_transformer import MultimodalTransformer
-from .vit_encoder import ViTEncoder
-from .gnn_model import PVGraphModel
-# Re-export the MultimodalTransformer class from the correct module.
-# Try the common module names and raise a clear error if none found.
+"""
+inference package initializer.
 
-_try_imported = False
-for _name in ("multimodal_transformer", "transformer"):
+This file tries to locate and re-export a `Predictor` class from a few
+common submodule names so users can do:
+
+    from inference import Predictor
+
+If no concrete Predictor implementation is found, a helpful ImportError is
+raised when someone tries to instantiate `Predictor`, allowing imports of the
+package without failing immediately.
+"""
+
+__version__ = "0.0.0"
+
+# Try importing Predictor from likely submodules. Adjust the list if your
+# project uses a different module name.
+_predictor_impl = None
+for _mod in ("predict", "predictor", "runner", "core"):
     try:
-        module = __import__(f"{__name__}.{_name}", fromlist=["MultimodalTransformer"])
-        MultimodalTransformer = getattr(module, "MultimodalTransformer")
-        _try_imported = True
+        _module = __import__(f"{__name__}.{_mod}", fromlist=["Predictor"])
+        _predictor_impl = getattr(_module, "Predictor")
         break
-    except (ImportError, AttributeError):
-        continue
+    except Exception:
+        # Ignore and try the next candidate module name
+        _predictor_impl = None
 
-if not _try_imported:
-    raise ImportError(
-        "Could not import 'MultimodalTransformer' from models.multimodal_transformer or models.transformer. "
-        "Check module filenames inside the models/ directory and adjust models/__init__.py accordingly."
-    )
+if _predictor_impl is None:
+    class _MissingPredictor:
+        def __init__(self, *args, **kwargs):
+            raise ImportError(
+                "No `Predictor` implementation found in the `inference` package. "
+                "Expected `Predictor` to be defined in one of: "
+                "inference.predict, inference.predictor, inference.runner, or inference.core. "
+                "Either implement `Predictor` in a submodule or import the concrete "
+                "module directly (for example `from inference.predict import Predictor`)."
+            )
 
-__all__ = ["MultimodalTransformer"]
+    Predictor = _MissingPredictor
+else:
+    Predictor = _predictor_impl
+
+__all__ = ["Predictor"]
