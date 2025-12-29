@@ -1,9 +1,8 @@
-import torch
+# training/quantile_loss.py
+import tensorflow as tf
 
-def quantile_loss(preds, target, quantiles):
-    losses = []
-    for i, q in enumerate(quantiles):
-        errors = target - preds[:, :, i]
-        loss = torch.max(q * errors, (q - 1) * errors)
-        losses.append(loss.unsqueeze(-1))
-    return torch.mean(torch.sum(torch.cat(losses, dim=-1), dim=-1))
+def quantile_loss(q):
+    def loss(y_true, y_pred):
+        e = y_true - y_pred
+        return tf.reduce_mean(tf.maximum(q * e, (q - 1) * e))
+    return loss
