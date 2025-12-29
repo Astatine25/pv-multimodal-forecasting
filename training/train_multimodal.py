@@ -29,7 +29,12 @@ Path(SAVE_PATH).mkdir(parents=True, exist_ok=True)
 df = pd.read_csv(DATA_PATH, parse_dates=["timestamp"])
 df = df.sort_values("timestamp").dropna()
 
+from sklearn.preprocessing import StandardScaler
+
+scaler = StandardScaler()
+df["power_scaled"] = scaler.fit_transform(df[["power"]])
 power = df["power_scaled"].values
+
 
 vit_cols = [c for c in df.columns if c.startswith("vit_")]
 weather_cols = [
