@@ -5,6 +5,39 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, Input
 from tensorflow.keras.callbacks import EarlyStopping
 
+# ==============================================================================
+# Quantile Loss for Multi-Horizon Forecasting
+# Output shape : (batch, 3, FUTURE_STEPS)
+# Quantiles     : [0.1, 0.5, 0.9]
+# ==============================================================================
+
+import tensorflow as tf
+
+@tf.function
+def quantile_loss_multi(y_true, y_pred):
+    """
+    y_true: (batch, FUTURE_STEPS)
+    y_pred: (batch, 3, FUTURE_STEPS)
+    """
+
+    # Quantiles
+    qs = tf.constant([0.1, 0.5, 0.9], dtype=tf.float32)
+
+    # Expand y_true → (batch, 1, FUTURE_STEPS)
+    y_true = tf.expand_dims(y_true, axis=1)
+
+    # Error term
+    error = y_true - y_pred
+
+    # Quantile loss
+    loss = tf.maximum(
+        qs[:, None] * error,
+        (qs[:, None] - 1.0) * error
+    )
+
+    # Mean over batch, quantiles, horizon
+    return tf.reduce_mean(loss)
+
 # ==========================
 # CONFIG
 # ==========================
