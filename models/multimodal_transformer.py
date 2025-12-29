@@ -1,5 +1,3 @@
-from .multimodal_transformer import MultimodalTransformer
-
 import torch
 import torch.nn as nn
 
@@ -12,7 +10,7 @@ class MultimodalTransformer(nn.Module):
     def __init__(self):
         super().__init__()
         # Sequence encoder
-        self.seq_fc = nn.Linear(HISTORY_STEPS*FEATURE_DIM, 128)
+        self.seq_fc = nn.Linear(HISTORY_STEPS * FEATURE_DIM, 128)
         # Image encoder
         self.img_fc = nn.Linear(IMG_EMB_DIM, 64)
         # Fusion
@@ -31,3 +29,5 @@ class MultimodalTransformer(nn.Module):
 
 def build_model():
     return MultimodalTransformer()
+
+__all__ = ["MultimodalTransformer", "build_model"]
