@@ -1,33 +1,71 @@
-import torch
-import torch.nn as nn
+# models/multimodal_transformer.py
+import tensorflow as tf
+from tensorflow.keras import layers, models, Input
 
-HISTORY_STEPS = 24
-FEATURE_DIM = 4  # Power + weather features
-IMG_EMB_DIM = 64
+# -----------------------------
+# GLOBAL PARAMETERS
+# -----------------------------
+HISTORY_STEPS = 12
 FUTURE_STEPS = 6
+IMG_EMB_DIM = 768  # ViT default embedding size
+D_MODEL = 64
 
-class MultimodalTransformer(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Sequence encoder
-        self.seq_fc = nn.Linear(HISTORY_STEPS * FEATURE_DIM, 128)
-        # Image encoder
-        self.img_fc = nn.Linear(IMG_EMB_DIM, 64)
-        # Fusion
-        self.fusion_fc = nn.Linear(128 + 64, 64)
-        self.out_fc = nn.Linear(64, FUTURE_STEPS)
+# -----------------------------
+# Quantile loss function
+# -----------------------------
+def quantile_loss(q):
+    def loss(y_true, y_pred):
+        e = y_true - y_pred
+        return tf.reduce_mean(tf.maximum(q * e, (q - 1) * e))
+    return loss
 
-    def forward(self, seq_x, img_x):
-        # Flatten sequence
-        seq_x = seq_x.view(seq_x.size(0), -1)
-        seq_feat = torch.relu(self.seq_fc(seq_x))
-        img_feat = torch.relu(self.img_fc(img_x))
-        fused = torch.cat([seq_feat, img_feat], dim=1)
-        fused = torch.relu(self.fusion_fc(fused))
-        out = self.out_fc(fused)
-        return out
+# -----------------------------
+# Transformer Encoder Block
+# -----------------------------
+def transformer_encoder(x, d_model, num_heads, ff_dim, dropout=0.1):
+    # Multi-head self-attention
+    attn_out = layers.MultiHeadAttention(
+        key_dim=d_model // num_heads,
+        num_heads=num_heads,
+        dropout=dropout
+    )(x, x)
+    x = layers.Add()([x, attn_out])
+    x = layers.LayerNormalization(epsilon=1e-6)(x)
 
-def build_model():
-    return MultimodalTransformer()
+    # Feed-forward network
+    ff_out = layers.Dense(ff_dim, activation="relu")(x)
+    ff_out = layers.Dense(d_model)(ff_out)
+    x = layers.Add()([x, ff_out])
+    return layers.LayerNormalization(epsilon=1e-6)(x)
 
-__all__ = ["MultimodalTransformer", "build_model"]
+# -----------------------------
+# Build Multimodal Transformer
+# -----------------------------
+def build_model(history_steps=HISTORY_STEPS, num_weather_features=3, future_steps=FUTURE_STEPS, img_emb_dim=IMG_EMB_DIM):
+    # -------- Temporal Input: Power + Weather --------
+    seq_in = Input(shape=(history_steps, 1 + num_weather_features))
+    x = layers.Dense(D_MODEL)(seq_in)
+    x = transformer_encoder(x, D_MODEL, num_heads=4, ff_dim=128)
+    x = layers.GlobalAveragePooling1D()(x)
+
+    # -------- Image Embedding Input (ViT) --------
+    img_in = Input(shape=(img_emb_dim,))
+    img_feat = layers.Dense(D_MODEL, activation="relu")(img_in)
+
+    # -------- Fusion --------
+    fusion = layers.Concatenate()([x, img_feat])
+    fusion = layers.Dense(128, activation="relu")(fusion)
+    fusion = layers.Dense(64, activation="relu")(fusion)
+
+    # -------- Output: 3 Quantiles --------
+    out = layers.Dense(future_steps * 3)(fusion)
+    out = layers.Reshape((3, future_steps))(out)
+
+    model = models.Model([seq_in, img_in], out)
+
+    # Compile with median quantile loss (0.5) as main optimizer
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(1e-4),
+        loss=quantile_loss(0.5)
+    )
+    return model
