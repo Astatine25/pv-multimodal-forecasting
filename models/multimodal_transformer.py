@@ -1,4 +1,4 @@
-# models/multimodal_transformer.py
+from .multimodal_transformer import MultimodalTransformer
 
 import torch
 import torch.nn as nn
