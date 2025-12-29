@@ -1,130 +1,92 @@
-# training/train_multimodal.py
-
+# =================================================================
+# train_multimodal.py
+# =================================================================
 import pandas as pd
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, Input
 from tensorflow.keras.callbacks import EarlyStopping
-from pathlib import Path
+from utils.data_utils import load_pv_data, load_weather_data, load_and_encode_images
+from models.multimodal_transformer import build_model
 
-from training.quantile_loss import quantile_loss
-
-# -----------------------------
+# ----------------------------
 # Config
-# -----------------------------
+# ----------------------------
 HISTORY_STEPS = 12
 FUTURE_STEPS = 6
-D_MODEL = 128
-BATCH_SIZE = 32
-EPOCHS = 30
+WEATHER_COLS = ["AMBIENT_TEMPERATURE", "MODULE_TEMPERATURE", "IRRADIATION"]
 
-DATA_PATH = "data/processed/merged_multimodal.csv"
-SAVE_PATH = "models/checkpoints/quantile_multimodal"
+# ----------------------------
+# Load Data
+# ----------------------------
+pv_df, scaler = load_pv_data("data/processed/merged_multimodal.csv")  # already merged
+weather_df = load_weather_data("data/Plant_2_Weather_Sensor_Data.csv", WEATHER_COLS)
+img_emb_df = pd.read_csv("data/processed/vit_embeddings.csv", index_col=0)
 
-Path(SAVE_PATH).mkdir(parents=True, exist_ok=True)
+# Merge modalities
+full_df = pd.merge_asof(pv_df.sort_index(), img_emb_df.sort_index(), direction="backward")
+full_df = pd.merge_asof(full_df.sort_index(), weather_df.sort_index(), direction="backward")
+full_df = full_df.dropna()
 
-# -----------------------------
-# Load data
-# -----------------------------
-df = pd.read_csv(DATA_PATH, parse_dates=["timestamp"])
-df = df.sort_values("timestamp").dropna()
-
-from sklearn.preprocessing import StandardScaler
-
-scaler = StandardScaler()
-df["power_scaled"] = scaler.fit_transform(df[["power"]])
-power = df["power_scaled"].values
-
-
-vit_cols = [c for c in df.columns if c.startswith("vit_")]
-weather_cols = [
-    c for c in df.columns
-    if c not in vit_cols + ["timestamp", "power", "power_scaled"]
-]
-
-vit_data = df[vit_cols].values
-weather_data = df[weather_cols].values
-
-# -----------------------------
+# ----------------------------
 # Build sequences
-# -----------------------------
-def build_sequences():
-    X_seq, X_img, y = [], [], []
-
+# ----------------------------
+def build_sequences(df):
+    X_p, X_i, X_w, y = [], [], [], []
+    power = df["power_scaled"].values
+    img_vals = df.iloc[:, 1:1 + 768].values  # ViT embeddings
+    weather_vals = df[WEATHER_COLS].values
     for i in range(len(df) - HISTORY_STEPS - FUTURE_STEPS):
-        seq = np.hstack([
-            power[i:i+HISTORY_STEPS, None],
-            np.repeat(weather_data[i+HISTORY_STEPS][None, :],
-                      HISTORY_STEPS, axis=0)
-        ])
+        X_p.append(power[i:i + HISTORY_STEPS])
+        X_i.append(img_vals[i + HISTORY_STEPS])
+        X_w.append(weather_vals[i + HISTORY_STEPS])
+        y.append(power[i + HISTORY_STEPS:i + HISTORY_STEPS + FUTURE_STEPS])
+    return np.array(X_p)[..., None], np.array(X_i), np.array(X_w), np.array(y)
 
-        X_seq.append(seq)
-        X_img.append(vit_data[i+HISTORY_STEPS])
-        y.append(power[i+HISTORY_STEPS:i+HISTORY_STEPS+FUTURE_STEPS])
+X_p, X_i, X_w, y = build_sequences(full_df)
 
-    return np.array(X_seq), np.array(X_img), np.array(y)
+# Expand weather to match history
+def expand_weather(X_p, X_w):
+    w_seq = np.repeat(X_w[:, None, :], HISTORY_STEPS, axis=1)
+    return np.concatenate([X_p, w_seq], axis=-1)
 
-X_seq, X_img, y = build_sequences()
+X_pw = expand_weather(X_p, X_w)
 
-split = int(0.8 * len(X_seq))
-X_seq_tr, X_seq_te = X_seq[:split], X_seq[split:]
-X_img_tr, X_img_te = X_img[:split], X_img[split:]
+# Train/test split
+split = int(0.8 * len(X_pw))
+X_tr, X_te = X_pw[:split], X_pw[split:]
+X_i_tr, X_i_te = X_i[:split], X_i[split:]
 y_tr, y_te = y[:split], y[split:]
 
-# -----------------------------
-# Model
-# -----------------------------
-def transformer_block(x):
-    attn = layers.MultiHeadAttention(num_heads=4, key_dim=D_MODEL)(x, x)
-    x = layers.Add()([x, attn])
-    x = layers.LayerNormalization()(x)
+# ----------------------------
+# Build model
+# ----------------------------
+model = build_model(HISTORY_STEPS, X_pw.shape[-1] - HISTORY_STEPS, img_emb_dim=X_i_tr.shape[1])
 
-    ff = layers.Dense(D_MODEL * 2, activation="relu")(x)
-    ff = layers.Dense(D_MODEL)(ff)
-    x = layers.Add()([x, ff])
-    return layers.LayerNormalization()(x)
+# ----------------------------
+# Multi-quantile loss
+# ----------------------------
+def multi_quantile_loss(y_true, y_pred):
+    quantiles = tf.constant([0.1, 0.5, 0.9], dtype=tf.float32)
+    y_true = tf.expand_dims(y_true, axis=1)  # (batch,1,FUTURE)
+    e = y_true - y_pred                       # (batch,3,FUTURE)
+    q = tf.reshape(quantiles, (1, 3, 1))
+    loss = tf.maximum(q * e, (q - 1) * e)
+    return tf.reduce_mean(loss)
 
-seq_in = Input(shape=(HISTORY_STEPS, X_seq.shape[-1]))
-img_in = Input(shape=(vit_data.shape[1],))
+model.compile(optimizer="adam", loss=multi_quantile_loss)
 
-x = layers.Dense(D_MODEL)(seq_in)
-x = transformer_block(x)
-x = layers.GlobalAveragePooling1D()(x)
-
-img_feat = layers.Dense(D_MODEL, activation="relu")(img_in)
-
-fusion = layers.Concatenate()([x, img_feat])
-fusion = layers.Dense(256, activation="relu")(fusion)
-fusion = layers.Dense(128, activation="relu")(fusion)
-
-out = layers.Dense(FUTURE_STEPS * 3)(fusion)
-out = layers.Reshape((3, FUTURE_STEPS))(out)
-
-model = models.Model([seq_in, img_in], out)
-
-model.compile(
-    optimizer="adam",
-    loss=[
-        quantile_loss(0.1),
-        quantile_loss(0.5),
-        quantile_loss(0.9)
-    ]
-)
-
-model.summary()
-
-# -----------------------------
+# ----------------------------
 # Train
-# -----------------------------
-model.fit(
-    [X_seq_tr, X_img_tr],
-    [y_tr, y_tr, y_tr],
-    validation_split=0.1,
-    epochs=EPOCHS,
-    batch_size=BATCH_SIZE,
-    callbacks=[EarlyStopping(patience=5, restore_best_weights=True)],
-    verbose=1
-)
+# ----------------------------
+model.fit([X_tr, X_i_tr], y_tr,
+          validation_data=([X_te, X_i_te], y_te),
+          epochs=30, batch_size=32,
+          callbacks=[EarlyStopping(patience=5, restore_best_weights=True)],
+          verbose=1)
 
-model.save(SAVE_PATH)
-print("Model trained and saved successfully.")
+# ----------------------------
+# Save model
+# ----------------------------
+model.save("models/checkpoints/multimodal_model")
+print("Model training complete and saved.")
