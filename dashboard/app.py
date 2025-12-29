@@ -1,91 +1,103 @@
 # dashboard/app.py
-import streamlit as st
+
+import sys
+from pathlib import Path
+import time
+import json
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-from pathlib import Path
-from utils.data_utils import load_and_encode_images, load_weather_data
-from models.multimodal_transformer import build_model
-import paho.mqtt.client as mqtt
-from kafka import KafkaConsumer
+import streamlit as st
+import torch
+import timm
+from PIL import Image
 
-st.set_page_config(page_title="PV Power Forecasting", layout="wide")
+# --------------------------------------------------
+# Path setup
+# --------------------------------------------------
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-# -----------------------------
-# Load model
-# -----------------------------
-model = build_model()
-model.load_weights("models/checkpoints/multimodal_model")  # load trained weights
+from inference.realtime_inference import RealtimePredictor
 
-# -----------------------------
-# Load Weather Data
-# -----------------------------
-WEATHER_COLS = ["AMBIENT_TEMPERATURE", "MODULE_TEMPERATURE", "IRRADIATION"]
-weather_df = load_weather_data("data/Plant_2_Weather_Sensor_Data.csv", WEATHER_COLS)
+# --------------------------------------------------
+# ViT encoder (timm)
+# --------------------------------------------------
+@st.cache_resource
+def load_vit():
+    model = timm.create_model(
+        "vit_base_patch16_224",
+        pretrained=True,
+        num_classes=0
+    )
+    model.eval()
+    return model
 
-# -----------------------------
-# Load Images (ViT embeddings)
-# -----------------------------
-image_encoder = None
-try:
-    from timm import create_model
-    import torch
-    class ViTEncoder:
-        def __init__(self):
-            self.model = create_model('vit_base_patch16_224', pretrained=True)
-            self.model.eval()
+vit = load_vit()
 
-        def __call__(self, img_tensor):
-            with torch.no_grad():
-                return self.model.forward(img_tensor).numpy()
+def encode_image(img_path):
+    img = Image.open(img_path).convert("RGB").resize((224, 224))
+    x = torch.tensor(np.array(img)).permute(2, 0, 1).float() / 255.0
+    x = x.unsqueeze(0)
+    with torch.no_grad():
+        emb = vit(x).numpy()[0]
+    return emb
 
-    image_encoder = ViTEncoder()
-except:
-    st.warning("timm / ViT not installed. Using placeholder embeddings.")
 
-# -----------------------------
-# MQTT / Kafka Streams (Optional)
-# -----------------------------
-KAFKA_TOPIC = "pv_forecast"
-MQTT_BROKER = "localhost"
+# --------------------------------------------------
+# Load trained model
+# --------------------------------------------------
+@st.cache_resource
+def load_model():
+    ckpt = Path("models/checkpoints/multimodal_model")
+    return RealtimePredictor(ckpt)
 
-def on_message(client, userdata, msg):
-    st.write(f"MQTT message received: {msg.payload}")
+model = load_model()
 
-client = mqtt.Client()
-client.on_message = on_message
-# client.connect(MQTT_BROKER)
-# client.loop_start()
-# client.subscribe("pv/forecast")
+# --------------------------------------------------
+# Streamlit UI
+# --------------------------------------------------
+st.set_page_config(page_title="PV Multimodal Forecast Dashboard", layout="wide")
+st.title("☀️ PV Multimodal Forecast Dashboard")
 
-# -----------------------------
-# User Interface
-# -----------------------------
-st.title("Multimodal PV Power Forecasting")
+st.sidebar.header("Controls")
+horizon = st.sidebar.slider("Forecast Horizon (hours)", 1, 24, 6)
 
-uploaded_image = st.file_uploader("Upload sky image", type=["jpg", "png"])
-weather_input = st.text_input("Enter weather CSV path (optional)", "data/Plant_2_Weather_Sensor_Data.csv")
+# --------------------------------------------------
+# Simulated real-time inputs
+# --------------------------------------------------
+def get_latest_inputs():
+    power_hist = np.random.rand(12, 1)
+    weather = np.random.rand(12, 3)
+    temporal = np.concatenate([power_hist, weather], axis=1)
 
-if uploaded_image is not None:
-    img_arr = tf.keras.preprocessing.image.img_to_array(
-        tf.keras.preprocessing.image.load_img(uploaded_image, target_size=(224,224))
-    ) / 255.0
+    img_files = sorted(Path("data/images").rglob("*.jpg"))
+    img_emb = encode_image(img_files[-1])
 
-    if image_encoder:
-        img_tensor = np.expand_dims(img_arr, 0)
-        img_emb = image_encoder(img_tensor)  # shape (1, IMG_EMB_DIM)
-    else:
-        img_emb = np.random.rand(1, 64)  # fallback
+    return temporal[None, ...], img_emb[None, ...]
 
-    # Dummy historical power + weather
-    X_seq = np.random.rand(1, 12, 1 + len(WEATHER_COLS))
+# --------------------------------------------------
+# Inference
+# --------------------------------------------------
+temporal, img_emb = get_latest_inputs()
 
-    # Predict
-    pred = model.predict([X_seq, img_emb])[0]  # shape (3, FUTURE_STEPS)
-    lower, median, upper = pred[0], pred[1], pred[2]
+q10, q50, q90 = model.predict(temporal, img_emb)
 
-    st.line_chart(pd.DataFrame({
-        "Lower": lower,
-        "Median": median,
-        "Upper": upper
-    }))
+forecast = q50.flatten()
+lower = q10.flatten()
+upper = q90.flatten()
+
+# --------------------------------------------------
+# Plot
+# --------------------------------------------------
+df = pd.DataFrame({
+    "P50 Forecast": forecast,
+    "Lower (P10)": lower,
+    "Upper (P90)": upper
+}, index=np.arange(1, horizon + 1))
+
+st.subheader("Forecast with Uncertainty")
+st.line_chart(df)
+
+st.caption(
+    "Model: Multimodal Transformer (ViT + Weather + PV) | "
+    "Uncertainty: Quantile Regression"
+)
