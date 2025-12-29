@@ -1,41 +1,53 @@
-import pandas as pd
+import torch
 import numpy as np
+import pandas as pd
 from pathlib import Path
 from PIL import Image
-from sklearn.preprocessing import StandardScaler
-import re
+from torchvision import transforms
 
-IMG_SIZE = 64
-IMG_EMB_DIM = 64
+from models.vit_encoder import ViTEncoder
 
-def load_pv_data(csv_path):
-    pv_df = pd.read_csv(csv_path)
-    pv_df.columns = ["timestamp", "power"]
-    pv_df["timestamp"] = pd.to_datetime(pv_df["timestamp"])
-    pv_df = pv_df.set_index("timestamp").sort_index()
-    pv_df = pv_df.resample("15min").mean().interpolate()
-    scaler = StandardScaler()
-    pv_df["power_scaled"] = scaler.fit_transform(pv_df[["power"]])
-    return pv_df, scaler
+# -------------------------
+# ViT setup (CPU-safe)
+# -------------------------
+device = "cpu"
+vit = ViTEncoder(emb_dim=64).to(device).eval()
 
-def load_weather_data(csv_path, cols):
-    weather_df = pd.read_csv(csv_path)
-    weather_df["DATE_TIME"] = pd.to_datetime(weather_df["DATE_TIME"])
-    weather_df = weather_df.set_index("DATE_TIME")[cols]
-    weather_df = weather_df.resample("1min").mean().interpolate().ffill().bfill()
-    return weather_df
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+])
 
-def load_and_encode_images(img_dir, image_encoder, limit=20000):
-    images, times = [], []
-    files = sorted(Path(img_dir).rglob("*.jpg"))[:limit]
+# -------------------------
+# IMAGE LOADER + ENCODER
+# -------------------------
+def load_and_encode_images(img_dir, batch_size=16):
+    images, timestamps = [], []
+
+    files = sorted(Path(img_dir).rglob("*.jpg"))
+
     for f in files:
-        match = re.search(r"\d{14}", f.stem)
-        if not match:
+        # Extract timestamp from filename
+        ts = pd.to_datetime(f.stem, format="%Y%m%d%H%M%S", errors="coerce")
+        if pd.isna(ts):
             continue
-        ts = pd.to_datetime(match.group(), format="%Y%m%d%H%M%S").floor("1min")
-        img = Image.open(f).resize((IMG_SIZE, IMG_SIZE)).convert("RGB")
-        images.append(np.asarray(img)/255.0)
-        times.append(ts)
-    images = np.array(images)
-    emb = image_encoder.predict(images, batch_size=32, verbose=1)
-    return pd.DataFrame(emb, index=pd.to_datetime(times)).sort_index()
+
+        img = Image.open(f).convert("RGB")
+        images.append(transform(img))
+        timestamps.append(ts)
+
+    if len(images) == 0:
+        raise ValueError("No valid images found")
+
+    images = torch.stack(images).to(device)
+
+    # 🔑 YOUR SNIPPET RUNS HERE
+    with torch.no_grad():
+        emb = vit(images).cpu().numpy()
+
+    emb_df = pd.DataFrame(
+        emb,
+        index=pd.to_datetime(timestamps)
+    ).sort_index()
+
+    return emb_df
