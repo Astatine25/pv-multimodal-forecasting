@@ -27,7 +27,7 @@ WEATHER_COLS = [
 # =====================================================
 # LOAD PV DATA
 # =====================================================
-print("📥 Loading PV data...")
+print("Loading PV data...")
 pv_df = pd.read_csv(PV_PATH)
 pv_df.columns = ["timestamp", "power"]
 pv_df["timestamp"] = pd.to_datetime(pv_df["timestamp"])
@@ -36,7 +36,7 @@ pv_df = pv_df.set_index("timestamp").sort_index()
 # =====================================================
 # LOAD WEATHER DATA
 # =====================================================
-print("🌤 Loading weather data...")
+print("Loading weather data...")
 weather_df = pd.read_csv(WEATHER_PATH)
 weather_df["DATE_TIME"] = pd.to_datetime(weather_df["DATE_TIME"])
 weather_df = (
@@ -52,7 +52,7 @@ weather_df = (
 # =====================================================
 # LOAD ViT EMBEDDINGS
 # =====================================================
-print("🖼 Loading ViT embeddings...")
+print("Loading ViT embeddings...")
 vit_embeddings = np.load(VIT_EMB_PATH)
 vit_timestamps = pd.read_csv(VIT_TS_PATH)
 
@@ -67,7 +67,7 @@ img_df = pd.DataFrame(
 # =====================================================
 # MERGE PV + IMAGE EMBEDDINGS
 # =====================================================
-print("🔗 Merging PV and images...")
+print("Merging PV and images...")
 merged_df = pd.merge_asof(
     pv_df.sort_index(),
     img_df.sort_index(),
@@ -80,7 +80,7 @@ merged_df = pd.merge_asof(
 # =====================================================
 # MERGE WEATHER
 # =====================================================
-print("🔗 Merging weather data...")
+print("Merging weather data...")
 merged_df = pd.merge_asof(
     merged_df.sort_index(),
     weather_df.sort_index(),
@@ -98,7 +98,7 @@ Path("data/processed").mkdir(parents=True, exist_ok=True)
 merged_df.to_csv(OUTPUT_PATH)
 
 print("=" * 50)
-print("✅ Multimodal dataset created successfully")
+print("Multimodal dataset created successfully")
 print("Final shape:", merged_df.shape)
 print("Saved to:", OUTPUT_PATH)
 print("=" * 50)
