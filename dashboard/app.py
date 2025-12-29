@@ -1,103 +1,111 @@
-# dashboard/app.py
-
-import sys
-from pathlib import Path
-import time
-import json
+# app.py
+import streamlit as st
 import numpy as np
 import pandas as pd
-import streamlit as st
-import torch
-import timm
-from PIL import Image
+import tensorflow as tf
+import matplotlib.pyplot as plt
 
-# --------------------------------------------------
-# Path setup
-# --------------------------------------------------
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+# =========================
+# CONFIG
+# =========================
+MODEL_PATH = "models/checkpoints/multimodal_model"
+DATA_PATH = "data/processed/merged_multimodal.csv"
 
-from inference.realtime_inference import RealtimePredictor
+HISTORY_STEPS = 12
+FUTURE_STEPS = 6
+WEATHER_COLS = ["AMBIENT_TEMPERATURE", "MODULE_TEMPERATURE", "IRRADIATION"]
+IMG_EMB_DIM = 768
 
-# --------------------------------------------------
-# ViT encoder (timm)
-# --------------------------------------------------
-@st.cache_resource
-def load_vit():
-    model = timm.create_model(
-        "vit_base_patch16_224",
-        pretrained=True,
-        num_classes=0
-    )
-    model.eval()
-    return model
-
-vit = load_vit()
-
-def encode_image(img_path):
-    img = Image.open(img_path).convert("RGB").resize((224, 224))
-    x = torch.tensor(np.array(img)).permute(2, 0, 1).float() / 255.0
-    x = x.unsqueeze(0)
-    with torch.no_grad():
-        emb = vit(x).numpy()[0]
-    return emb
-
-
-# --------------------------------------------------
-# Load trained model
-# --------------------------------------------------
+# =========================
+# LOAD MODEL
+# =========================
 @st.cache_resource
 def load_model():
-    ckpt = Path("models/checkpoints/multimodal_model")
-    return RealtimePredictor(ckpt)
+    return tf.keras.models.load_model(MODEL_PATH, compile=False)
 
 model = load_model()
 
-# --------------------------------------------------
-# Streamlit UI
-# --------------------------------------------------
-st.set_page_config(page_title="PV Multimodal Forecast Dashboard", layout="wide")
-st.title("☀️ PV Multimodal Forecast Dashboard")
+# =========================
+# LOAD DATA
+# =========================
+@st.cache_data
+def load_data():
+    df = pd.read_csv(DATA_PATH, parse_dates=["timestamp"])
+    return df.sort_values("timestamp").reset_index(drop=True)
 
-st.sidebar.header("Controls")
-horizon = st.sidebar.slider("Forecast Horizon (hours)", 1, 24, 6)
+df = load_data()
 
-# --------------------------------------------------
-# Simulated real-time inputs
-# --------------------------------------------------
-def get_latest_inputs():
-    power_hist = np.random.rand(12, 1)
-    weather = np.random.rand(12, 3)
-    temporal = np.concatenate([power_hist, weather], axis=1)
+img_cols = [c for c in df.columns if c.startswith("vit_")]
 
-    img_files = sorted(Path("data/images").rglob("*.jpg"))
-    img_emb = encode_image(img_files[-1])
+# Normalize power (same as training)
+power_mean = df["power"].mean()
+power_std = df["power"].std() + 1e-6
 
-    return temporal[None, ...], img_emb[None, ...]
+# =========================
+# STREAMLIT UI
+# =========================
+st.title("PV Power Forecast (Quantile-Aware)")
+st.markdown("**P10 / P50 / P90 probabilistic forecasting using ViT + Transformer**")
 
-# --------------------------------------------------
-# Inference
-# --------------------------------------------------
-temporal, img_emb = get_latest_inputs()
-
-q10, q50, q90 = model.predict(temporal, img_emb)
-
-forecast = q50.flatten()
-lower = q10.flatten()
-upper = q90.flatten()
-
-# --------------------------------------------------
-# Plot
-# --------------------------------------------------
-df = pd.DataFrame({
-    "P50 Forecast": forecast,
-    "Lower (P10)": lower,
-    "Upper (P90)": upper
-}, index=np.arange(1, horizon + 1))
-
-st.subheader("Forecast with Uncertainty")
-st.line_chart(df)
-
-st.caption(
-    "Model: Multimodal Transformer (ViT + Weather + PV) | "
-    "Uncertainty: Quantile Regression"
+idx = st.slider(
+    "Select starting timestep",
+    HISTORY_STEPS,
+    len(df) - FUTURE_STEPS - 1,
+    len(df) - FUTURE_STEPS - 1,
 )
+
+# =========================
+# BUILD INPUT
+# =========================
+power_seq = df["power"].values[idx-HISTORY_STEPS:idx]
+power_seq = (power_seq - power_mean) / power_std
+
+weather_seq = df[WEATHER_COLS].values[idx-HISTORY_STEPS:idx]
+pw_seq = np.concatenate(
+    [power_seq[:, None], weather_seq],
+    axis=1
+)[None, :, :]  # (1, 12, 4)
+
+img_emb = df[img_cols].iloc[idx].values[None, :]  # (1, 768)
+
+# =========================
+# PREDICT
+# =========================
+pred = model.predict([pw_seq, img_emb], verbose=0)
+
+# Output: (1, 3, 6)
+p10, p50, p90 = pred[0]
+
+# De-normalize
+p10 = p10 * power_std + power_mean
+p50 = p50 * power_std + power_mean
+p90 = p90 * power_std + power_mean
+
+# =========================
+# PLOT
+# =========================
+t = np.arange(1, FUTURE_STEPS + 1)
+
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(t, p50, label="P50 (Median)", linewidth=2)
+ax.fill_between(t, p10, p90, alpha=0.3, label="P10–P90 Uncertainty")
+ax.set_xlabel("Forecast Horizon")
+ax.set_ylabel("PV Power")
+ax.set_title("6-Step Ahead Forecast")
+ax.legend()
+ax.grid(True)
+
+st.pyplot(fig)
+
+# =========================
+# TABLE
+# =========================
+st.subheader("Forecast Values")
+out_df = pd.DataFrame({
+    "Horizon": t,
+    "P10": p10,
+    "P50": p50,
+    "P90": p90
+})
+
+st.dataframe(out_df, use_container_width=True)
